@@ -3321,7 +3321,7 @@ int mdss_fb_atomic_commit(struct fb_info *info,
 	struct mdss_panel_info *pinfo;
 	bool wait_for_finish, wb_change = false;
 	int ret = -EPERM;
-	u32 old_xres, old_yres, old_format;
+	u32 old_xres = 0, old_yres = 0, old_format = 0;
 
 	if (!mfd || (!mfd->op_enable)) {
 		pr_err("mfd is NULL or operation not permitted\n");
@@ -3332,31 +3332,35 @@ int mdss_fb_atomic_commit(struct fb_info *info,
 		!((mfd->dcm_state == DCM_ENTER) &&
 		(mfd->panel.type == MIPI_CMD_PANEL))) {
 		pr_err("commit is not supported when interface is in off state\n");
-		goto end;
+		return ret;
 	}
 	pinfo = mfd->panel_info;
 
 	/* only supports version 1.0 */
 	if (commit->version != MDP_COMMIT_VERSION_1_0) {
 		pr_err("commit version is not supported\n");
-		goto end;
+		return ret;
 	}
 
 	if (!mfd->mdp.pre_commit || !mfd->mdp.atomic_validate) {
 		pr_err("commit callback is not registered\n");
-		goto end;
+		return ret;
 	}
 
 	commit_v1 = &commit->commit_v1;
 	if (commit_v1->flags & MDP_VALIDATE_LAYER) {
 		ret = mdss_fb_wait_for_kickoff(mfd);
 		if (ret) {
-			pr_err("wait for kickoff failed\n");
+			pr_err("wait for kickoff failed, ret: %d\n", ret);
 		} else {
 			__ioctl_transition_dyn_mode_state(mfd,
 				MSMFB_ATOMIC_COMMIT, true, false);
 			if (mfd->panel.type == WRITEBACK_PANEL) {
 				output_layer = commit_v1->output_layer;
+				if (!output_layer) {
+					pr_err("Output layer is null\n");
+					return ret;
+				}
 				wb_change = !mdss_fb_is_wb_config_same(mfd,
 						commit_v1->output_layer);
 				if (wb_change) {
@@ -3372,13 +3376,16 @@ int mdss_fb_atomic_commit(struct fb_info *info,
 			ret = mfd->mdp.atomic_validate(mfd, file, commit_v1);
 			if (!ret)
 				mfd->atomic_commit_pending = true;
+			else if (wb_change)
+				mdss_fb_update_resolution(mfd, old_xres,
+							old_yres, old_format);
 		}
-		goto end;
+		return ret;
 	} else {
 		ret = mdss_fb_pan_idle(mfd);
 		if (ret) {
-			pr_err("pan display idle call failed\n");
-			goto end;
+			pr_err("pan display idle call failed, ret: %d\n", ret);
+			return ret;
 		}
 		__ioctl_transition_dyn_mode_state(mfd,
 			MSMFB_ATOMIC_COMMIT, false,
@@ -3386,8 +3393,8 @@ int mdss_fb_atomic_commit(struct fb_info *info,
 
 		ret = mfd->mdp.pre_commit(mfd, file, commit_v1);
 		if (ret) {
-			pr_err("atomic pre commit failed\n");
-			goto end;
+			pr_err("atomic pre commit failed, ret: %d\n", ret);
+			return ret;
 		}
 	}
 
@@ -3406,9 +3413,6 @@ int mdss_fb_atomic_commit(struct fb_info *info,
 	if (wait_for_finish)
 		ret = mdss_fb_pan_idle(mfd);
 
-end:
-	if (ret && (mfd->panel.type == WRITEBACK_PANEL) && wb_change)
-		mdss_fb_update_resolution(mfd, old_xres, old_yres, old_format);
 	return ret;
 }
 
@@ -4453,11 +4457,22 @@ static int mdss_fb_atomic_commit_ioctl(struct fb_info *info,
 	struct mdp_input_layer __user *input_layer_list;
 	struct mdp_output_layer *output_layer = NULL;
 	struct mdp_output_layer __user *output_layer_user;
+	struct msm_fb_data_type *mfd;
 
 	ret = copy_from_user(&commit, argp, sizeof(struct mdp_layer_commit));
 	if (ret) {
 		pr_err("%s:copy_from_user failed\n", __func__);
 		return ret;
+	}
+
+	mfd = (struct msm_fb_data_type *)info->par;
+	if (!mfd)
+		return -EINVAL;
+
+	if (mfd->panel_info->panel_dead) {
+		pr_debug("early commit return\n");
+		MDSS_XLOG(mfd->panel_info->panel_dead);
+		return 0;
 	}
 
 	output_layer_user = commit.commit_v1.output_layer;
@@ -4688,6 +4703,15 @@ static int __ioctl_wait_idle(struct msm_fb_data_type *mfd, u32 cmd)
 	return ret;
 }
 
+static bool check_not_supported_ioctl(u32 cmd)
+{
+	return((cmd == MSMFB_OVERLAY_SET) || (cmd == MSMFB_OVERLAY_UNSET) ||
+		(cmd == MSMFB_OVERLAY_GET) || (cmd == MSMFB_OVERLAY_PREPARE) ||
+		(cmd == MSMFB_DISPLAY_COMMIT) || (cmd == MSMFB_OVERLAY_PLAY) ||
+		(cmd == MSMFB_BUFFER_SYNC) || (cmd == MSMFB_OVERLAY_QUEUE) ||
+		(cmd == MSMFB_NOTIFY_UPDATE));
+}
+
 /*
  * mdss_fb_do_ioctl() - MDSS Framebuffer ioctl function
  * @info:	pointer to framebuffer info
@@ -4721,6 +4745,11 @@ int mdss_fb_do_ioctl(struct fb_info *info, unsigned int cmd,
 	pdata = dev_get_platdata(&mfd->pdev->dev);
 	if (!pdata || pdata->panel_info.dynamic_switch_pending)
 		return -EPERM;
+
+	if (check_not_supported_ioctl(cmd)) {
+		pr_err("Unsupported ioctl\n");
+		return -EINVAL;
+	}
 
 	atomic_inc(&mfd->ioctl_ref_cnt);
 

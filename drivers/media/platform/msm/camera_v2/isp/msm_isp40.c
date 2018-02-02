@@ -34,12 +34,13 @@
 #define VFE40_STATS_BURST_LEN_8916_VERSION 2
 #define VFE40_FETCH_BURST_LEN 3
 #define VFE40_UB_SIZE 1536 /* 1536 * 128 bits = 24KB */
+#define VFE40_STATS_SIZE 392
 #define VFE40_UB_SIZE_8952 2048 /* 2048 * 128 bits = 32KB */
 #define VFE40_UB_SIZE_8916 3072 /* 3072 * 128 bits = 48KB */
 #define VFE40_EQUAL_SLICE_UB 190 /* (UB_SIZE - STATS SIZE)/6 */
 #define VFE40_EQUAL_SLICE_UB_8916 236
 #define VFE40_TOTAL_WM_UB 1144 /* UB_SIZE - STATS SIZE */
-#define VFE40_TOTAL_WM_UB_8916 1656
+#define VFE40_TOTAL_WM_UB_8916 2680
 #define VFE40_WM_BASE(idx) (0x6C + 0x24 * idx)
 #define VFE40_RDI_BASE(idx) (0x2E8 + 0x4 * idx)
 #define VFE40_XBAR_BASE(idx) (0x58 + 0x4 * (idx / 2))
@@ -103,7 +104,11 @@ static uint32_t msm_vfe40_ub_reg_offset(struct vfe_device *vfe_dev, int idx)
 
 static uint32_t msm_vfe40_get_ub_size(struct vfe_device *vfe_dev)
 {
-	if (vfe_dev->vfe_hw_version == VFE40_8916_VERSION) {
+	if (vfe_dev->vfe_hw_version == VFE40_8916_VERSION ||
+		vfe_dev->vfe_hw_version == VFE40_8939_VERSION ||
+		vfe_dev->vfe_hw_version == VFE40_8937_VERSION ||
+		vfe_dev->vfe_hw_version == VFE40_8953_VERSION ||
+		vfe_dev->vfe_hw_version == VFE40_8917_VERSION) {
 		vfe_dev->ub_info->wm_ub = VFE40_TOTAL_WM_UB_8916;
 		return VFE40_TOTAL_WM_UB_8916;
 	}
@@ -164,8 +169,7 @@ static int32_t msm_vfe40_init_qos_parms(struct vfe_device *vfe_dev,
 			qos_regs, qos_entries);
 		if (rc < 0) {
 			pr_err("%s: NO QOS BUS BDG info\n", __func__);
-			kfree(qos_settings);
-			kfree(qos_regs);
+
 		} else {
 			if (qos_parms->settings) {
 				rc = of_property_read_u32_array(of_node,
@@ -174,20 +178,15 @@ static int32_t msm_vfe40_init_qos_parms(struct vfe_device *vfe_dev,
 				if (rc < 0) {
 					pr_err("%s: NO QOS settings\n",
 						__func__);
-					kfree(qos_settings);
-					kfree(qos_regs);
 				} else {
 					for (i = 0; i < qos_entries; i++)
 						msm_camera_io_w(qos_settings[i],
 							vfebase + qos_regs[i]);
-					kfree(qos_settings);
-					kfree(qos_regs);
 				}
-			} else {
-				kfree(qos_settings);
-				kfree(qos_regs);
 			}
 		}
+		kfree(qos_settings);
+		kfree(qos_regs);
 	}
 	rc = of_property_read_u32(of_node, ds_parms->entries,
 		&ds_entries);
@@ -211,8 +210,6 @@ static int32_t msm_vfe40_init_qos_parms(struct vfe_device *vfe_dev,
 			ds_regs, ds_entries);
 		if (rc < 0) {
 			pr_err("%s: NO D/S register info\n", __func__);
-			kfree(ds_settings);
-			kfree(ds_regs);
 		} else {
 			if (ds_parms->settings) {
 				rc = of_property_read_u32_array(of_node,
@@ -221,20 +218,16 @@ static int32_t msm_vfe40_init_qos_parms(struct vfe_device *vfe_dev,
 				if (rc < 0) {
 					pr_err("%s: NO D/S settings\n",
 						__func__);
-					kfree(ds_settings);
-					kfree(ds_regs);
-	} else {
+				} else {
 					for (i = 0; i < ds_entries; i++)
 						msm_camera_io_w(ds_settings[i],
 							vfebase + ds_regs[i]);
-						kfree(ds_regs);
-						kfree(ds_settings);
 				}
-			} else {
-				kfree(ds_regs);
-				kfree(ds_settings);
 			}
+
 		}
+		kfree(ds_settings);
+		kfree(ds_regs);
 	}
 	return 0;
 }
@@ -705,6 +698,12 @@ static void msm_vfe40_reg_update(struct vfe_device *vfe_dev,
 		vfe_dev->reg_update_requested;
 	if ((vfe_dev->is_split && vfe_dev->pdev->id == ISP_VFE1) &&
 		((frame_src == VFE_PIX_0) || (frame_src == VFE_SRC_MAX))) {
+		if (!vfe_dev->common_data->dual_vfe_res->vfe_base[ISP_VFE0]) {
+			pr_err("%s vfe_base for ISP_VFE0 is NULL\n", __func__);
+			spin_unlock_irqrestore(&vfe_dev->reg_update_lock,
+				flags);
+			return;
+		}
 		msm_camera_io_w_mb(update_mask,
 			vfe_dev->common_data->dual_vfe_res->vfe_base[ISP_VFE0]
 			+ 0x378);

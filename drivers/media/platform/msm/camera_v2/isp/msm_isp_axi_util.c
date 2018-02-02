@@ -911,9 +911,12 @@ void msm_isp_increment_frame_id(struct vfe_device *vfe_dev,
 				msm_isp_halt_send_error(vfe_dev,
 					ISP_EVENT_REG_UPDATE_MISSING);
 			}
-
 		} else
 			vfe_dev->axi_data.src_info[frame_src].frame_id++;
+	}
+	if (frame_src == VFE_PIX_0) {
+		vfe_dev->isp_page->kernel_sofid =
+			vfe_dev->axi_data.src_info[frame_src].frame_id;
 	}
 	sof_info = vfe_dev->axi_data.src_info[frame_src].
 		dual_hw_ms_info.sof_info;
@@ -1557,6 +1560,10 @@ void msm_isp_halt_send_error(struct vfe_device *vfe_dev, uint32_t event)
 		/* Recovery is already in Progress */
 		return;
 
+	/* if there are no active streams - do not start recovery */
+	if (!vfe_dev->axi_data.num_active_stream)
+		return;
+
 	if (ISP_EVENT_PING_PONG_MISMATCH == event &&
 		vfe_dev->axi_data.recovery_count < MAX_RECOVERY_THRESHOLD) {
 		vfe_dev->hw_info->vfe_ops.irq_ops.
@@ -1779,7 +1786,7 @@ static int msm_isp_cfg_ping_pong_address(struct vfe_device *vfe_dev,
 	uint32_t stream_idx = HANDLE_TO_IDX(stream_info->stream_handle);
 	uint32_t buffer_size_byte = 0;
 	int32_t word_per_line = 0;
-	dma_addr_t paddr;
+	dma_addr_t paddr = 0;
 	struct dual_vfe_resource *dual_vfe_res = NULL;
 	uint32_t vfe_id = 0;
 	unsigned long flags;
@@ -1848,7 +1855,9 @@ static int msm_isp_cfg_ping_pong_address(struct vfe_device *vfe_dev,
 
 		if (dual_vfe_res) {
 			for (vfe_id = 0; vfe_id < MAX_VFE; vfe_id++) {
-				if (vfe_id != vfe_dev->pdev->id)
+				bool lock = vfe_id != vfe_dev->pdev->id;
+
+				if (lock)
 					spin_lock_irqsave(
 						&vfe_dev->common_data->
 						common_dev_axi_lock, flags);
@@ -1878,7 +1887,7 @@ static int msm_isp_cfg_ping_pong_address(struct vfe_device *vfe_dev,
 						buf[!pingpong_bit] =
 						buf;
 				}
-				if (vfe_id != vfe_dev->pdev->id)
+				if (lock)
 					spin_unlock_irqrestore(
 						&vfe_dev->common_data->
 						common_dev_axi_lock, flags);
